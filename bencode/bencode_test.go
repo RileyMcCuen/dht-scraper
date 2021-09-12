@@ -192,6 +192,17 @@ func TestBuildDict(t *testing.T) {
 	}
 }
 
+func TestBuildDictFromPairs(t *testing.T) {
+	d := D(
+		P(S("cow"), S("moo")),
+		P(S("all"), S("aboard")),
+		P(S("jazz"), S("cobra")),
+	)
+	if !equal(d.Keys(), []String{S("all"), S("cow"), S("jazz")}) {
+		t.Fatal("dictionary keys are either missing or in incorrect order")
+	}
+}
+
 var (
 	//go:embed ubuntu-21.04-desktop-amd64.iso.torrent
 	realWorldData []byte
@@ -201,11 +212,12 @@ var (
 )
 
 func TestDecodeRealWorldData(t *testing.T) {
+	buffer = bytes.NewBuffer(mbytes(0))
 	torrent, err = DecodeFromBytes(realWorldData)
 	if err != nil {
 		t.Fatal(err, torrent.(Bencoder).String())
 	}
-	if err = torrent.(Bencoder).Bencode(buffer); err != nil {
+	if err = torrent.(Bencoder).Bencode(NewWriter(buffer)); err != nil {
 		t.Fatal(err)
 	}
 	if string(realWorldData) != buffer.String() {
@@ -228,7 +240,7 @@ func BenchmarkRealWorld(b *testing.B) {
 	b.Run("Marshal", func(b *testing.B) {
 		for n := 0; n < b.N; n++ {
 			buffer = bytes.NewBuffer(mbytes(0))
-			if err = torrent.(Bencoder).Bencode(buffer); err != nil {
+			if err = torrent.(Bencoder).Bencode(NewWriter(buffer)); err != nil {
 				b.Fatal(err)
 			}
 		}

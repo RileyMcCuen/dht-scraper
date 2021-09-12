@@ -9,6 +9,16 @@ import (
 )
 
 type (
+	Reader struct {
+		io.Reader
+		n, read int64
+		err     error
+	}
+	Writer struct {
+		io.Writer
+		writ int64
+		err  error
+	}
 	Pair struct {
 		Key   String
 		Value Bencoder
@@ -18,31 +28,55 @@ type (
 	List     []Bencoder // l<elems>e
 	Dict     []Pair     // d<keyvalues>e
 	Bencoder interface {
-		Bencode(io.Writer) error
+		Bencode(*Writer) error
+		Bytes() []byte
 		String() string
 	}
 )
 
 // Helpers
 
+func NewReader(r io.Reader) *Reader { return &Reader{r, 0, 0, nil} }
+func NewWriter(w io.Writer) *Writer { return &Writer{w, 0, nil} }
+
+func (r *Reader) Error() error      { return r.err }
+func (w *Writer) Error() error      { return w.err }
+func (r *Reader) NumRead() int64    { return r.read }
+func (w *Writer) NumWritten() int64 { return w.writ }
+
+func (r *Reader) Read(p []byte) *Reader {
+	if r.err == nil {
+		i, err := r.Reader.Read(p)
+		r.n, r.read, r.err = int64(i), r.read+int64(i), err
+	}
+	return r
+}
+func (w *Writer) Write(p []byte) *Writer {
+	if w.err == nil {
+		i, err := w.Writer.Write(p)
+		w.writ, w.err = w.writ+int64(i), err
+	}
+	return w
+}
+
 func mbytes(sz int) []byte { return make([]byte, sz) }
 func btobs(b byte) []byte  { return []byte{b} }
 
-func readUntil(r io.Reader, b byte, app []byte) ([]byte, error) {
+func readUntil(r *Reader, b byte, app []byte) ([]byte, error) {
 	buf := mbytes(1)
 	for {
-		n, err := r.Read(buf)
-		if n > 0 {
+		r.Read(buf)
+		if r.n > 0 {
 			if buf[0] == b {
 				return app, nil
 			} else {
 				app = append(app, buf[0])
 			}
-		} else if err != nil {
-			if err == io.EOF {
+		} else if r.err != nil {
+			if r.err == io.EOF {
 				return app, errors.New("eof reached before byte was found")
 			}
-			return app, err
+			return app, r.err
 		} else {
 			return app, errors.New("empty reader cannot be readUntil")
 		}
@@ -103,17 +137,12 @@ const (
 func S(s string) String               { return String(s) }
 func StringFromBytes(s []byte) String { return String(s) }
 
-func (s String) Bencode(w io.Writer) error {
-	if _, err := w.Write(strconv.AppendInt(mbytes(0), int64(len(s)), 10)); err != nil {
-		return err
-	}
-	if _, err := w.Write(btobs(stringSep)); err != nil {
-		return err
-	}
-	if _, err := w.Write(s); err != nil {
-		return err
-	}
-	return nil
+func (s String) Bencode(w *Writer) error {
+	w.
+		Write(strconv.AppendInt(mbytes(0), int64(len(s)), 10)).
+		Write(btobs(stringSep)).
+		Write(s)
+	return w.err
 }
 
 func (s String) Raw() string { return string(s) }
@@ -145,50 +174,43 @@ func (s String) Less(o String) bool {
 
 func (s String) Len() int { return len(s) }
 
-func (s String) String() string {
-	buf := bytes.NewBuffer(mbytes(0))
-	_ = s.Bencode(buf)
-	return buf.String()
+func (s String) Bytes() []byte {
+	buf := NewWriter(bytes.NewBuffer(mbytes(0)))
+	s.Bencode(buf)
+	return buf.Writer.(*bytes.Buffer).Bytes()
 }
+
+func (s String) String() string { return string(s.Bytes()) }
 
 func I(i int64) Int { return Int(i) }
 
-func (i Int) Bencode(w io.Writer) error {
-	if _, err := w.Write(btobs(intStart)); err != nil {
-		return err
-	}
-	if _, err := w.Write(strconv.AppendInt(mbytes(0), int64(i), 10)); err != nil {
-		return err
-	}
-	if _, err := w.Write(btobs(end)); err != nil {
-		return err
-	}
-	return nil
+func (i Int) Bencode(w *Writer) error {
+	w.
+		Write(btobs(intStart)).
+		Write(strconv.AppendInt(mbytes(0), int64(i), 10)).
+		Write(btobs(end))
+	return w.err
 }
 
 func (i Int) Raw() int64 { return int64(i) }
 
-func (i Int) String() string {
-	buf := bytes.NewBuffer(mbytes(0))
-	_ = i.Bencode(buf)
-	return buf.String()
+func (i Int) Bytes() []byte {
+	buf := NewWriter(bytes.NewBuffer(mbytes(0)))
+	i.Bencode(buf)
+	return buf.Writer.(*bytes.Buffer).Bytes()
 }
+
+func (i Int) String() string { return string(i.Bytes()) }
 
 func L(elems ...Bencoder) List { return List(elems) }
 
-func (l List) Bencode(w io.Writer) error {
-	if _, err := w.Write(btobs(listStart)); err != nil {
-		return err
-	}
+func (l List) Bencode(w *Writer) error {
+	w.Write(btobs(listStart))
 	for _, elem := range l {
-		if err := elem.Bencode(w); err != nil {
-			return err
-		}
+		elem.Bencode(w)
 	}
-	if _, err := w.Write(btobs(end)); err != nil {
-		return err
-	}
-	return nil
+	w.Write(btobs(end))
+	return w.err
 }
 
 func (l List) Append(elem Bencoder) List { return append(l, elem) }
@@ -200,36 +222,35 @@ func (l List) Get(idx int) Bencoder {
 	return nil
 }
 
-func (l List) String() string {
-	buf := bytes.NewBuffer(mbytes(0))
-	_ = l.Bencode(buf)
-	return buf.String()
+func (l List) Bytes() []byte {
+	buf := NewWriter(bytes.NewBuffer(mbytes(0)))
+	l.Bencode(buf)
+	return buf.Writer.(*bytes.Buffer).Bytes()
 }
+
+func (l List) String() string { return string(l.Bytes()) }
 
 func P(k String, v Bencoder) Pair { return Pair{k, v} }
 
-func (p Pair) bencode(w io.Writer) error {
-	if err := p.Key.Bencode(w); err != nil {
-		return err
-	}
+func (p Pair) bencode(w *Writer) error {
+	p.Key.Bencode(w)
 	return p.Value.Bencode(w)
 }
 
-func D(pairs ...Pair) Dict { return Dict(pairs) }
+func D(pairs ...Pair) Dict {
+	sort.Slice(pairs, func(i, j int) bool {
+		return pairs[i].Key.Less(pairs[j].Key)
+	})
+	return Dict(pairs)
+}
 
-func (d Dict) Bencode(w io.Writer) error {
-	if _, err := w.Write(btobs(dictStart)); err != nil {
-		return err
-	}
+func (d Dict) Bencode(w *Writer) error {
+	w.Write(btobs(dictStart))
 	for _, val := range d {
-		if err := val.bencode(w); err != nil {
-			return err
-		}
+		val.bencode(w)
 	}
-	if _, err := w.Write(btobs(end)); err != nil {
-		return err
-	}
-	return nil
+	w.Write(btobs(end))
+	return w.err
 }
 
 func (d Dict) Keys() []String {
@@ -263,15 +284,17 @@ func (d Dict) Get(k String) Bencoder {
 	return nil
 }
 
-func (d Dict) String() string {
-	buf := bytes.NewBuffer(mbytes(0))
-	_ = d.Bencode(buf)
-	return buf.String()
+func (d Dict) Bytes() []byte {
+	buf := NewWriter(bytes.NewBuffer(mbytes(0)))
+	d.Bencode(buf)
+	return buf.Writer.(*bytes.Buffer).Bytes()
 }
+
+func (d Dict) String() string { return string(d.Bytes()) }
 
 // Functions to handle decoding of types coming over the wire
 
-func decodeString(r io.Reader, fByte []byte) (String, error) {
+func decodeString(r *Reader, fByte []byte) (String, error) {
 	strLenRaw, err := readUntil(r, stringSep, fByte)
 	if err != nil {
 		return nil, err
@@ -284,8 +307,8 @@ func decodeString(r io.Reader, fByte []byte) (String, error) {
 		return nil, errors.New("string length must be positive or 0")
 	}
 	s := make(String, strLen)
-	n, err := r.Read(s)
-	if int64(n) == strLen {
+	r.Read(s)
+	if int64(r.n) == strLen {
 		return s, nil
 	}
 	if err != nil {
@@ -294,7 +317,7 @@ func decodeString(r io.Reader, fByte []byte) (String, error) {
 	return s, errors.New("full string could not be read")
 }
 
-func decodeInt(r io.Reader) (Int, error) {
+func decodeInt(r *Reader) (Int, error) {
 	data, err := readUntil(r, end, mbytes(0))
 	if err != nil {
 		return 0, err
@@ -303,7 +326,7 @@ func decodeInt(r io.Reader) (Int, error) {
 	return Int(i), err
 }
 
-func decodeList(r io.Reader) (List, error) {
+func decodeList(r *Reader) (List, error) {
 	l := make(List, 0)
 	for {
 		b, err := decode(r)
@@ -317,7 +340,7 @@ func decodeList(r io.Reader) (List, error) {
 	}
 }
 
-func decodeDict(r io.Reader) (Dict, error) {
+func decodeDict(r *Reader) (Dict, error) {
 	d := make(Dict, 0)
 	for {
 		k, err := decode(r)
@@ -341,11 +364,11 @@ func decodeDict(r io.Reader) (Dict, error) {
 	}
 }
 
-func decode(r io.Reader) (Bencoder, error) {
+func decode(r *Reader) (Bencoder, error) {
 	// TODO: Chunk stream -> speed up reads from pipe / less allocation
 	b := mbytes(1)
-	n, err := r.Read(b)
-	if n > 0 {
+	r.Read(b)
+	if r.n > 0 {
 		switch b[0] {
 		case num0, num1, num2, num3, num4, num5, num6, num7, num8, num9:
 			return decodeString(r, b)
@@ -360,14 +383,14 @@ func decode(r io.Reader) (Bencoder, error) {
 		default:
 			return nil, errors.New("invalid character found " + string(b[0]))
 		}
-	} else if err != nil {
-		return nil, err
+	} else if r.err != nil {
+		return nil, r.err
 	}
 	return nil, errors.New("empty reader cannot be decoded")
 }
 
 func Decode(r io.Reader) (Bencoder, error) {
-	ret, err := decode(r)
+	ret, err := decode(NewReader(r))
 	if err == io.EOF {
 		return ret, nil
 	}
