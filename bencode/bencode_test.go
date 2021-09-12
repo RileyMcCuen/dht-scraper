@@ -1,6 +1,7 @@
 package bencode
 
 import (
+	"bytes"
 	_ "embed"
 	"testing"
 )
@@ -196,16 +197,19 @@ var (
 	realWorldData []byte
 	torrent       interface{}
 	err           error
-	buffer        []byte
+	buffer        *bytes.Buffer
 )
 
 func TestDecodeRealWorldData(t *testing.T) {
-	torrent, err := DecodeFromBytes(realWorldData)
+	torrent, err = DecodeFromBytes(realWorldData)
 	if err != nil {
 		t.Fatal(err, torrent.(Bencoder).String())
 	}
-	if string(realWorldData) != string(torrent.(Bencoder).Bencode(buffer)) {
-		t.Fatal("did not equivalent but should have been\n", string(torrent.(Bencoder).Bencode(buffer)))
+	if err = torrent.(Bencoder).Bencode(buffer); err != nil {
+		t.Fatal(err)
+	}
+	if string(realWorldData) != buffer.String() {
+		t.Fatal("did not equivalent but should have been")
 	}
 }
 
@@ -223,16 +227,15 @@ func BenchmarkRealWorld(b *testing.B) {
 	})
 	b.Run("Marshal", func(b *testing.B) {
 		for n := 0; n < b.N; n++ {
-			buffer = buffer[:0]
-			buffer = torrent.(Bencoder).Bencode(buffer)
-			if err != nil {
+			buffer = bytes.NewBuffer(mbytes(0))
+			if err = torrent.(Bencoder).Bencode(buffer); err != nil {
 				b.Fatal(err)
 			}
 		}
 		b.StopTimer()
 	})
 	b.StopTimer()
-	if string(realWorldData) != string(buffer) {
+	if string(realWorldData) != buffer.String() {
 		b.Fatal("strings should have been equal but were not")
 	}
 }

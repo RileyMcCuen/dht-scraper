@@ -3,27 +3,22 @@ package bencode
 import (
 	"bytes"
 	"errors"
-	"fmt"
 	"io"
 	"sort"
 	"strconv"
 )
 
 type (
-	stringReadCloser struct {
-		io.Reader
-		read int
-	}
-	pair struct {
+	Pair struct {
 		Key   String
 		Value Bencoder
 	}
 	String   []byte     // <num bytes>:<bytes>
 	Int      int64      // i<num>e
 	List     []Bencoder // l<elems>e
-	Dict     []pair     // d<keyvalues>e
+	Dict     []Pair     // d<keyvalues>e
 	Bencoder interface {
-		Bencode(data []byte) []byte
+		Bencode(io.Writer) error
 		String() string
 	}
 )
@@ -31,13 +26,7 @@ type (
 // Helpers
 
 func mbytes(sz int) []byte { return make([]byte, sz) }
-
-func (r *stringReadCloser) Close() error { return nil }
-func (r *stringReadCloser) Read(p []byte) (int, error) {
-	i, err := r.Reader.Read(p)
-	r.read += i
-	return i, err
-}
+func btobs(b byte) []byte  { return []byte{b} }
 
 func readUntil(r io.Reader, b byte, app []byte) ([]byte, error) {
 	buf := mbytes(1)
@@ -114,10 +103,17 @@ const (
 func S(s string) String               { return String(s) }
 func StringFromBytes(s []byte) String { return String(s) }
 
-func (s String) Bencode(data []byte) []byte {
-	data = strconv.AppendInt(data, int64(len(s)), 10)
-	data = append(data, stringSep)
-	return append(data, s...)
+func (s String) Bencode(w io.Writer) error {
+	if _, err := w.Write(strconv.AppendInt(mbytes(0), int64(len(s)), 10)); err != nil {
+		return err
+	}
+	if _, err := w.Write(btobs(stringSep)); err != nil {
+		return err
+	}
+	if _, err := w.Write(s); err != nil {
+		return err
+	}
+	return nil
 }
 
 func (s String) Raw() string { return string(s) }
@@ -149,28 +145,50 @@ func (s String) Less(o String) bool {
 
 func (s String) Len() int { return len(s) }
 
-func (s String) String() string { return string(s.Bencode(mbytes(0))) }
+func (s String) String() string {
+	buf := bytes.NewBuffer(mbytes(0))
+	_ = s.Bencode(buf)
+	return buf.String()
+}
 
 func I(i int64) Int { return Int(i) }
 
-func (i Int) Bencode(data []byte) []byte {
-	data = append(data, intStart)
-	data = strconv.AppendInt(data, int64(i), 10)
-	return append(data, end)
+func (i Int) Bencode(w io.Writer) error {
+	if _, err := w.Write(btobs(intStart)); err != nil {
+		return err
+	}
+	if _, err := w.Write(strconv.AppendInt(mbytes(0), int64(i), 10)); err != nil {
+		return err
+	}
+	if _, err := w.Write(btobs(end)); err != nil {
+		return err
+	}
+	return nil
 }
 
 func (i Int) Raw() int64 { return int64(i) }
 
-func (i Int) String() string { return string(i.Bencode(mbytes(0))) }
+func (i Int) String() string {
+	buf := bytes.NewBuffer(mbytes(0))
+	_ = i.Bencode(buf)
+	return buf.String()
+}
 
 func L(elems ...Bencoder) List { return List(elems) }
 
-func (l List) Bencode(data []byte) []byte {
-	data = append(data, listStart)
-	for _, elem := range l {
-		data = elem.Bencode(data)
+func (l List) Bencode(w io.Writer) error {
+	if _, err := w.Write(btobs(listStart)); err != nil {
+		return err
 	}
-	return append(data, end)
+	for _, elem := range l {
+		if err := elem.Bencode(w); err != nil {
+			return err
+		}
+	}
+	if _, err := w.Write(btobs(end)); err != nil {
+		return err
+	}
+	return nil
 }
 
 func (l List) Append(elem Bencoder) List { return append(l, elem) }
@@ -182,24 +200,36 @@ func (l List) Get(idx int) Bencoder {
 	return nil
 }
 
-func (l List) String() string { return string(l.Bencode(mbytes(0))) }
-
-func p(k String, v Bencoder) pair { return pair{k, v} }
-
-func (p pair) bencode(data []byte) []byte {
-	data = p.Key.Bencode(data)
-	data = p.Value.Bencode(data)
-	return data
+func (l List) String() string {
+	buf := bytes.NewBuffer(mbytes(0))
+	_ = l.Bencode(buf)
+	return buf.String()
 }
 
-func D(pairs ...pair) Dict { return Dict(pairs) }
+func P(k String, v Bencoder) Pair { return Pair{k, v} }
 
-func (d Dict) Bencode(data []byte) []byte {
-	data = append(data, dictStart)
-	for _, val := range d {
-		data = val.bencode(data)
+func (p Pair) bencode(w io.Writer) error {
+	if err := p.Key.Bencode(w); err != nil {
+		return err
 	}
-	return append(data, end)
+	return p.Value.Bencode(w)
+}
+
+func D(pairs ...Pair) Dict { return Dict(pairs) }
+
+func (d Dict) Bencode(w io.Writer) error {
+	if _, err := w.Write(btobs(dictStart)); err != nil {
+		return err
+	}
+	for _, val := range d {
+		if err := val.bencode(w); err != nil {
+			return err
+		}
+	}
+	if _, err := w.Write(btobs(end)); err != nil {
+		return err
+	}
+	return nil
 }
 
 func (d Dict) Keys() []String {
@@ -220,7 +250,7 @@ func (d Dict) Put(k String, v Bencoder) Dict {
 	idx := d.IndexOf(k)
 	ret := make(Dict, len(d)+1)
 	copy(ret, d[:idx])
-	ret[idx] = p(k, v)
+	ret[idx] = P(k, v)
 	copy(ret[idx+1:], d[idx:])
 	return ret
 }
@@ -233,7 +263,11 @@ func (d Dict) Get(k String) Bencoder {
 	return nil
 }
 
-func (d Dict) String() string { return string(d.Bencode(mbytes(0))) }
+func (d Dict) String() string {
+	buf := bytes.NewBuffer(mbytes(0))
+	_ = d.Bencode(buf)
+	return buf.String()
+}
 
 // Functions to handle decoding of types coming over the wire
 
@@ -300,7 +334,7 @@ func decodeDict(r io.Reader) (Dict, error) {
 		if v == nil && err == nil {
 			return d, errors.New("last dict key has no associated value")
 		} else if err == nil {
-			d = append(d, p(ks, v))
+			d = append(d, P(ks, v))
 		} else {
 			return d, err
 		}
@@ -324,9 +358,6 @@ func decode(r io.Reader) (Bencoder, error) {
 		case end:
 			return nil, nil
 		default:
-			if rr, ok := r.(*stringReadCloser); ok {
-				return nil, errors.New("invalid character " + string(b[0]) + " found at " + fmt.Sprint(rr.read))
-			}
 			return nil, errors.New("invalid character found " + string(b[0]))
 		}
 	} else if err != nil {
@@ -335,8 +366,7 @@ func decode(r io.Reader) (Bencoder, error) {
 	return nil, errors.New("empty reader cannot be decoded")
 }
 
-func Decode(r io.ReadCloser) (Bencoder, error) {
-	defer r.Close()
+func Decode(r io.Reader) (Bencoder, error) {
 	ret, err := decode(r)
 	if err == io.EOF {
 		return ret, nil
@@ -345,7 +375,7 @@ func Decode(r io.ReadCloser) (Bencoder, error) {
 }
 
 func DecodeFromBytes(bs []byte) (Bencoder, error) {
-	return Decode(&stringReadCloser{bytes.NewBuffer(bs), 0})
+	return Decode(bytes.NewBuffer(bs))
 }
 
 func DecodeFromString(s string) (Bencoder, error) {
