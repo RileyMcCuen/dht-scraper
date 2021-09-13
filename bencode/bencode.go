@@ -19,6 +19,10 @@ type (
 		writ int64
 		err  error
 	}
+	ReadWriter struct {
+		*Reader
+		*Writer
+	}
 	Pair struct {
 		Key   String
 		Value Bencoder
@@ -38,6 +42,9 @@ type (
 
 func NewReader(r io.Reader) *Reader { return &Reader{r, 0, 0, nil} }
 func NewWriter(w io.Writer) *Writer { return &Writer{w, 0, nil} }
+func NewReadWriter(rw io.ReadWriter) *ReadWriter {
+	return &ReadWriter{NewReader(rw), NewWriter(rw)}
+}
 
 func (r *Reader) Error() error      { return r.err }
 func (w *Writer) Error() error      { return w.err }
