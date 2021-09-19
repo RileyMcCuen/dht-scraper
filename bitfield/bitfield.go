@@ -1,6 +1,10 @@
 package bitfield
 
-import "fmt"
+import (
+	"errors"
+	"fmt"
+	"io"
+)
 
 type (
 	BitField struct {
@@ -31,6 +35,22 @@ func NewBitField(numPieces int, full bool) *BitField {
 	return ret
 }
 
+func BitFieldFromReader(r io.Reader, numPieces int) (*BitField, error) {
+	size := (numPieces + 7) / 8
+	ret := &BitField{
+		numPieces,
+		make([]byte, size),
+	}
+	n, err := r.Read(ret.pieces)
+	if err != nil && err != io.EOF {
+		return nil, err
+	}
+	if n != size {
+		return nil, errors.New("could not recognize message header")
+	}
+	return ret, nil
+}
+
 func (b *BitField) String() string {
 	ret := ""
 	for _, by := range b.pieces {
@@ -39,7 +59,7 @@ func (b *BitField) String() string {
 	return ret
 }
 
-func (b *BitField) Fill() {
+func (b *BitField) Fill() *BitField {
 	fullPieces, specialLastByte := b.pieces, b.numPieces%8 != 0
 	if specialLastByte {
 		fullPieces = b.pieces[:len(fullPieces)-1]
@@ -55,12 +75,14 @@ func (b *BitField) Fill() {
 		}
 		b.pieces[len(b.pieces)-1] = by
 	}
+	return b
 }
 
-func (b *BitField) Clear() {
+func (b *BitField) Clear() *BitField {
 	for i := range b.pieces {
 		b.pieces[i] = off
 	}
+	return b
 }
 
 func (b *BitField) IsSet(i int) bool {
@@ -68,14 +90,16 @@ func (b *BitField) IsSet(i int) bool {
 	return bitFull(b.pieces[byIdx], bitIdx)
 }
 
-func (b *BitField) Set(i int) {
+func (b *BitField) Set(i int) *BitField {
 	byIdx, bitIdx := i/8, i%8
 	b.pieces[byIdx] = b.pieces[byIdx] | on>>bitIdx
+	return b
 }
 
-func (b *BitField) Unset(i int) {
+func (b *BitField) Unset(i int) *BitField {
 	byIdx, bitIdx := i/8, i%8
 	b.pieces[byIdx] = b.pieces[byIdx] & ^(on >> bitIdx)
+	return b
 }
 
 func (b *BitField) Next(start int) int {
@@ -124,3 +148,7 @@ func (b *BitField) AllUnset() []int {
 	}
 	return ret
 }
+
+func (b *BitField) NumBytes() int { return len(b.pieces) }
+
+func (b *BitField) Bytes() []byte { return b.pieces }

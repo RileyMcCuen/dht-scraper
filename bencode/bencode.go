@@ -3,9 +3,13 @@ package bencode
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"io"
+	"log"
+	"reflect"
 	"sort"
 	"strconv"
+	"strings"
 )
 
 type (
@@ -33,6 +37,8 @@ type (
 	Dict     []Pair     // d<keyvalues>e
 	Bencoder interface {
 		Bencode(*Writer) error
+		Unmarshal(dst reflect.Value) error
+		Pretty(ind, indInc string) string
 		Bytes() []byte
 		String() string
 	}
@@ -152,19 +158,39 @@ func (s String) Bencode(w *Writer) error {
 	return w.err
 }
 
+func (s String) Unmarshal(dst reflect.Value) error {
+	if dst.Kind() != reflect.Ptr {
+		return errors.New("(String) can only unmarshal to ptr")
+	}
+	e := dst.Elem()
+	if !e.CanSet() {
+		return errors.New("(String) cannot set field")
+	}
+	if e.Type() == reflect.TypeOf(S("")) {
+		e.Set(reflect.ValueOf(s))
+	} else {
+		switch k := e.Kind(); {
+		case k == reflect.String:
+			e.SetString(s.Raw())
+		case k == reflect.Slice && e.Elem().Kind() == reflect.Int8:
+			e.SetBytes(s)
+		default:
+			return errors.New("(String) invalid type for field")
+		}
+	}
+	return nil
+}
+
+func (s String) Pretty(ind, _ string) string {
+	if s.Len() <= 4 {
+		return ind + string(s) + "\n"
+	}
+	return ind + s.Raw() + "\n"
+}
 func (s String) Raw() string { return string(s) }
 
 func (s String) Equal(o String) bool {
-	if len(s) != len(o) {
-		return false
-	}
-	for i, sc := range s {
-		oc := o[i]
-		if sc != oc {
-			return false
-		}
-	}
-	return true
+	return bytes.Equal(s, o)
 }
 
 func (s String) Less(o String) bool {
@@ -199,7 +225,31 @@ func (i Int) Bencode(w *Writer) error {
 	return w.err
 }
 
-func (i Int) Raw() int64 { return int64(i) }
+func (i Int) Unmarshal(dst reflect.Value) error {
+	if dst.Kind() != reflect.Ptr {
+		return errors.New("(Int) can only unmarshal to ptr")
+	}
+	e := dst.Elem()
+	if !e.CanSet() {
+		return errors.New("(Int) cannot set field")
+	}
+	if e.Type() == reflect.TypeOf(I(0)) {
+		e.Set(reflect.ValueOf(i))
+	} else {
+		switch k := e.Kind(); k {
+		case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+			e.SetInt(i.Raw())
+		case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+			e.SetUint(uint64(i.Raw()))
+		default:
+			return errors.New("(Int) invalid type for field")
+		}
+	}
+	return nil
+}
+
+func (i Int) Pretty(ind, _ string) string { return ind + fmt.Sprint(i.Raw()) + "\n" }
+func (i Int) Raw() int64                  { return int64(i) }
 
 func (i Int) Bytes() []byte {
 	buf := NewWriter(bytes.NewBuffer(mbytes(0)))
@@ -220,6 +270,42 @@ func (l List) Bencode(w *Writer) error {
 	return w.err
 }
 
+func (l List) Unmarshal(dst reflect.Value) error {
+	if dst.Kind() != reflect.Ptr {
+		return errors.New("(List) can only unmarshal to ptr")
+	}
+	e := dst.Elem()
+	if e.Type() == reflect.TypeOf(L()) {
+		if !e.CanSet() {
+			return errors.New("(List) cannot set field")
+		}
+		e.Set(reflect.ValueOf(l))
+	} else {
+		switch k := e.Kind(); k {
+		case reflect.Struct:
+			if e.NumField() != l.Len() {
+				return errors.New("(List) struct does not have enough fields")
+			}
+			for i, val := range l {
+				if err := val.Unmarshal(e.Field(i).Addr()); err != nil {
+					return err
+				}
+			}
+		default:
+			return errors.New("(List) invalid type for field")
+		}
+	}
+	return nil
+}
+
+func (l List) Pretty(ind, indInc string) string {
+	ret := strings.Builder{}
+	for _, elem := range l {
+		ret.WriteString(elem.Pretty(ind, indInc))
+	}
+	return ret.String()
+}
+
 func (l List) Append(elem Bencoder) List { return append(l, elem) }
 
 func (l List) Get(idx int) Bencoder {
@@ -228,6 +314,8 @@ func (l List) Get(idx int) Bencoder {
 	}
 	return nil
 }
+
+func (l List) Len() int { return len(l) }
 
 func (l List) Bytes() []byte {
 	buf := NewWriter(bytes.NewBuffer(mbytes(0)))
@@ -251,6 +339,16 @@ func D(pairs ...Pair) Dict {
 	return Dict(pairs)
 }
 
+func (d Dict) Pretty(ind, indInc string) string {
+	nextInd, ret := ind+indInc, strings.Builder{}
+	for _, p := range d {
+		k, v := p.Key, p.Value
+		ret.WriteString(k.Pretty(ind, indInc))
+		ret.WriteString(v.Pretty(nextInd, indInc))
+	}
+	return ret.String()
+}
+
 func (d Dict) Bencode(w *Writer) error {
 	w.Write(btobs(dictStart))
 	for _, val := range d {
@@ -258,6 +356,34 @@ func (d Dict) Bencode(w *Writer) error {
 	}
 	w.Write(btobs(end))
 	return w.err
+}
+
+func (d Dict) Unmarshal(dst reflect.Value) error {
+	if dst.Kind() != reflect.Ptr {
+		return errors.New("(Dict) can only unmarshal to ptr")
+	}
+	e := dst.Elem()
+	if e.Type() == reflect.TypeOf(D()) {
+		if !e.CanSet() {
+			return errors.New("(Dict) cannot set field")
+		}
+		e.Set(reflect.ValueOf(d))
+	} else {
+		switch k := e.Kind(); k {
+		case reflect.Struct:
+			if e.NumField() != d.Len() {
+				return errors.New("(Dict) struct does not have enough fields")
+			}
+			for i, val := range d {
+				if err := val.Value.Unmarshal(e.Field(i).Addr()); err != nil {
+					return err
+				}
+			}
+		default:
+			return errors.New("Dict) invalid type for field")
+		}
+	}
+	return nil
 }
 
 func (d Dict) Keys() []String {
@@ -285,10 +411,59 @@ func (d Dict) Put(k String, v Bencoder) Dict {
 
 func (d Dict) Get(k String) Bencoder {
 	i := d.IndexOf(k)
+	if i >= d.Len() || i < 0 {
+		return nil
+	}
 	if pr := d[i]; pr.Key.Equal(k) {
 		return pr.Value
 	}
 	return nil
+}
+
+func (d Dict) Len() int { return len(d) }
+
+func (d Dict) GetString(k String) (String, error) {
+	ret := d.Get(k)
+	if ret == nil {
+		return nil, errors.New("no such key in dict")
+	}
+	if retStr, ok := ret.(String); ok {
+		return retStr, nil
+	}
+	return nil, errors.New("value for key in dict was not a String")
+}
+
+func (d Dict) GetInt(k String) (Int, error) {
+	ret := d.Get(k)
+	if ret == nil {
+		return 0, errors.New("no such key in dict")
+	}
+	if retInt, ok := ret.(Int); ok {
+		return retInt, nil
+	}
+	return 0, errors.New("value for key in dict was not a Int")
+}
+
+func (d Dict) GetList(k String) (List, error) {
+	ret := d.Get(k)
+	if ret == nil {
+		return nil, errors.New("no such key in dict")
+	}
+	if retList, ok := ret.(List); ok {
+		return retList, nil
+	}
+	return nil, errors.New("value for key in dict was not a List")
+}
+
+func (d Dict) GetDict(k String) (Dict, error) {
+	ret := d.Get(k)
+	if ret == nil {
+		return nil, errors.New("no such key in dict")
+	}
+	if retDict, ok := ret.(Dict); ok {
+		return retDict, nil
+	}
+	return nil, errors.New("value for key in dict was not a String")
 }
 
 func (d Dict) Bytes() []byte {
@@ -317,6 +492,8 @@ func decodeString(r *Reader, fByte []byte) (String, error) {
 	r.Read(s)
 	if int64(r.n) == strLen {
 		return s, nil
+	} else {
+		log.Println("len", strLen, r.n)
 	}
 	if err != nil {
 		return s, err
@@ -372,7 +549,6 @@ func decodeDict(r *Reader) (Dict, error) {
 }
 
 func decode(r *Reader) (Bencoder, error) {
-	// TODO: Chunk stream -> speed up reads from pipe / less allocation
 	b := mbytes(1)
 	r.Read(b)
 	if r.n > 0 {

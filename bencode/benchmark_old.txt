@@ -1,0 +1,2 @@
+BenchmarkRealWorld/Unmarshal-8         	   70854	     16591 ns/op	  223360 B/op	     120 allocs/op
+BenchmarkRealWorld/Marshal-8           	   81583	     14688 ns/op	  222786 B/op	      63 allocs/op

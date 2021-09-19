@@ -3,6 +3,7 @@ package bencode
 import (
 	"bytes"
 	_ "embed"
+	"reflect"
 	"testing"
 )
 
@@ -200,6 +201,60 @@ func TestBuildDictFromPairs(t *testing.T) {
 	)
 	if !equal(d.Keys(), []String{S("all"), S("cow"), S("jazz")}) {
 		t.Fatal("dictionary keys are either missing or in incorrect order")
+	}
+}
+
+func TestPrettyDict(t *testing.T) {
+	d := D(
+		P(S("cow"), S("moo")),
+		P(S("shopping"), L(S("milk"), S("eggs"))),
+		P(S("user"), D(
+			P(S("fname"), S("riley")),
+			P(S("lname"), S("mccuen")),
+		)),
+	)
+	expectedOutput := `cow
+    moo
+shopping
+    milk
+    eggs
+user
+    fname
+        riley
+    lname
+        mccuen
+`
+	if d.Pretty("", "    ") != expectedOutput {
+		t.Fatal("pretty print dict did not give expected output")
+	}
+}
+
+type unmarshalStruct struct {
+	A string
+	B int64
+	D struct {
+		A string
+		B int64
+	}
+	L struct {
+		First  string
+		Second string
+	}
+}
+
+func TestUnmarshal(t *testing.T) {
+	d := D(
+		P(S("a"), S("topa")),
+		P(S("cow"), I(10)),
+		P(S("dict"), D(
+			P(S("a-dict"), S("innera")),
+			P(S("dog"), I(100)),
+		)),
+		P(S("final"), L(S("first"), S("second"))),
+	)
+	ump := &unmarshalStruct{}
+	if err := d.Unmarshal(reflect.ValueOf(ump)); err != nil {
+		t.Fatal(err)
 	}
 }
 
