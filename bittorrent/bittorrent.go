@@ -2,6 +2,7 @@ package bittorrent
 
 import (
 	"bytes"
+	"dht/bencode"
 	bf "dht/bitfield"
 	"encoding/binary"
 	"errors"
@@ -49,10 +50,13 @@ type (
 		Extension    extension
 		Hash, PeerID []byte
 	}
+	ExtendedHandshake struct {
+		Dict bencode.Dict
+	}
 )
 
 const (
-	numReservedBits      = 20 * 8
+	numReservedBits      = 8 * 8
 	choke           byte = iota - 1
 	unchoke
 	interested
@@ -64,31 +68,53 @@ const (
 	cancel
 	port
 	extended  byte = 20
-	keepAlive byte = iota + 117
+	blank     byte = 0
+	keepAlive byte = iota + 115
 	handshake
-	Original extension = iota - 14
-	DHT
+	Unknown        extension = 0
+	Original       extension = 1
+	DHT            extension = 2
+	Extended       extension = 20
+	DHTAndExtended extension = 22
 )
 
 var (
 	btPreamble = []byte("BitTorrent protocol")
 )
 
-func (KeepAlive) Kind() byte     { return keepAlive }
-func (Handshake) Kind() byte     { return handshake }
-func (Choke) Kind() byte         { return choke }
-func (Unchoke) Kind() byte       { return unchoke }
-func (Interested) Kind() byte    { return interested }
-func (NotInterested) Kind() byte { return notInterested }
-func (Have) Kind() byte          { return have }
-func (BitField) Kind() byte      { return bitfield }
-func (Request) Kind() byte       { return request }
-func (Piece) Kind() byte         { return piece }
-func (Cancel) Kind() byte        { return cancel }
-func (Port) Kind() byte          { return port }
+func (KeepAlive) Kind() byte         { return keepAlive }
+func (Handshake) Kind() byte         { return handshake }
+func (Choke) Kind() byte             { return choke }
+func (Unchoke) Kind() byte           { return unchoke }
+func (Interested) Kind() byte        { return interested }
+func (NotInterested) Kind() byte     { return notInterested }
+func (Have) Kind() byte              { return have }
+func (BitField) Kind() byte          { return bitfield }
+func (Request) Kind() byte           { return request }
+func (Piece) Kind() byte             { return piece }
+func (Cancel) Kind() byte            { return cancel }
+func (Port) Kind() byte              { return port }
+func (ExtendedHandshake) Kind() byte { return extended }
 
-func (KeepAlive) Write(w *streamer) error     { return w.WriteNumbers(uint(0)) }
-func (Handshake) Write(w *streamer) error     { return w.WriteNumbers(uint(1), handshake) }
+func (KeepAlive) Write(w *streamer) error { return w.WriteNumbers(uint(0)) }
+func (h Handshake) Write(w *streamer) error {
+	if err := w.Write(19); err != nil {
+		return err
+	}
+	if err := w.Write(btPreamble...); err != nil {
+		return err
+	}
+	if err := w.Write(0, 0, 0, 0, 0, 0x10, 0, 1); err != nil {
+		return err
+	}
+	if err := w.Write(h.Hash...); err != nil {
+		return err
+	}
+	if err := w.Write(h.PeerID...); err != nil {
+		return err
+	}
+	return nil
+}
 func (Choke) Write(w *streamer) error         { return w.WriteNumbers(uint(1), choke) }
 func (Unchoke) Write(w *streamer) error       { return w.WriteNumbers(uint(1), unchoke) }
 func (Interested) Write(w *streamer) error    { return w.WriteNumbers(uint(1), interested) }
@@ -113,6 +139,14 @@ func (c Cancel) Write(w *streamer) error {
 	return w.WriteNumbers(uint(13), cancel, c.Index, c.Begin, c.Length)
 }
 func (p Port) Write(w *streamer) error { return w.WriteNumbers(uint(3), port, p.Port) }
+func (e ExtendedHandshake) Write(w *streamer) error {
+	hsMetadata := bencode.D(
+		bencode.P(bencode.S("m"), bencode.D(
+			bencode.P(bencode.S("ut_metadata"), bencode.I(1)),
+		)),
+	).Bytes()
+	return w.WriteNumbers(2+uint(len(hsMetadata)), Extended, blank, hsMetadata)
+}
 
 func newStreamer(rw io.ReadWriter, maxSize int) *streamer {
 	return &streamer{rw, make([]byte, 0), maxSize}
@@ -289,10 +323,53 @@ func (w *Wire) ReceiveHandshake() (h Handshake, err error) {
 	}
 	if len(res.AllSet()) == 0 {
 		h.Extension = Original
-	} else if res.IsSet(numReservedBits - 1) {
+	}
+	if res.IsSet(numReservedBits - 1) {
 		h.Extension = DHT
-	} else {
+	}
+	if res.IsSet(43) {
+		if h.Extension == DHT {
+			h.Extension = DHTAndExtended
+		}
+		h.Extension = Extended
+	}
+	if h.Extension == Unknown {
 		return h, errors.New("unrecognized reserved byte section")
 	}
 	return h, w.ReadRaws(h.Hash, h.PeerID)
+}
+
+func (w *Wire) ReceiveExtendedHandshake() (eh ExtendedHandshake, err error) {
+	l := uint(0)
+	if err := w.ReadNumber(&l); err != nil {
+		return eh, err
+	}
+	ext, err := w.ReadByte()
+	if err != nil {
+		return eh, err
+	}
+	if ext != extended {
+		return eh, errors.New("peer did not respond with extension handshake")
+	}
+	h, err := w.ReadByte()
+	if err != nil {
+		return eh, err
+	}
+	if h != blank {
+		return eh, errors.New("handshake byte was not 0")
+	}
+	bs := make([]byte, l-2)
+	if err := w.ReadRaw(bs); err != nil {
+		return eh, err
+	}
+	d, err := bencode.DecodeFromBytes(bs)
+	if err != nil {
+		return eh, err
+	}
+	di, ok := d.(bencode.Dict)
+	if !ok {
+		return eh, errors.New("message was not a dict but should have been")
+	}
+	eh.Dict = di
+	return eh, nil
 }

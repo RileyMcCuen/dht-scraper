@@ -39,6 +39,7 @@ type (
 		MessageType   string
 	}
 	crawler struct {
+		port       uint16
 		sender     dht.Sender
 		downloader dht.MetaLoader
 		clientID   b.String
@@ -59,8 +60,8 @@ func repeat(d time.Duration, f func()) {
 	}
 }
 
-func New(sender dht.Sender, downloader dht.MetaLoader, clientID b.String) Crawler {
-	return &crawler{sender, downloader, clientID, make([]dht.Node, 0)}
+func New(port uint16, sender dht.Sender, downloader dht.MetaLoader, clientID b.String) Crawler {
+	return &crawler{port, sender, downloader, clientID, make([]dht.Node, 0)}
 }
 
 func (c *crawler) HandleResponse(req dht.Requester, d b.Dict) error {
@@ -199,15 +200,18 @@ func (c *crawler) Start(bootstrapNodes []dht.Node) error {
 	return nil
 }
 
-func (c *crawler) getMetaData(hash string, r dht.Requester) error {
+func (c *crawler) getMetaData(hash []byte, r dht.Requester) error {
+	// connet over tcp
+	// bittorrent handshake
+	// accept extended handshake with port information from peer
+	// ping port on peer
 	conn, err := net.Dial("tcp4", r.Addr().String())
 	if err != nil {
 		return err
 	}
 	defer conn.Close()
 	w := bittorrent.NewWire(conn, 2<<18)
-	// TODO: send proper values for handshake
-	if err := w.Send(bittorrent.Handshake{Extension: bittorrent.DHT, Hash: nil, PeerID: nil}); err != nil {
+	if err := w.Send(bittorrent.Handshake{Extension: bittorrent.DHT, Hash: hash, PeerID: c.clientID}); err != nil {
 		return err
 	}
 	h, err := w.ReceiveHandshake()
@@ -217,18 +221,14 @@ func (c *crawler) getMetaData(hash string, r dht.Requester) error {
 	if h.Extension != bittorrent.DHT {
 		return errors.New("requester does not support DHT")
 	}
-	// TODO: find better port option to send
-	if err := w.Send(bittorrent.Port{Port: 0}); err != nil {
-		return err
-	}
-	m, err := w.ReadMessage()
+	eh, err := w.ReadMessage()
 	if err != nil {
 		return err
 	}
-	pm, ok := m.(bittorrent.Port)
+	extH, ok := eh.(bittorrent.ExtendedHandshake)
 	if !ok {
-		return errors.New("requester failed to send port message after handshake")
+		return errors.New("did not receive extended handshake response")
 	}
-	_ = pm.Port
+	_ = extH.Dict
 	return nil
 }

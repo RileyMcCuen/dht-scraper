@@ -32,7 +32,7 @@ func createCrawler(conn *net.UDPConn) (crawler.Crawler, error) {
 	if err != nil {
 		return nil, err
 	}
-	return crawler.New(dht.NewUDPSender(messageQueueSize, conn), dht.NewDownloader(), id), nil
+	return crawler.New(port, dht.NewUDPSender(messageQueueSize, conn), dht.NewDownloader(), id), nil
 }
 
 func startMessageHandler(c crawler.Crawler, conn *net.UDPConn) (dht.MessageHandler, error) {
